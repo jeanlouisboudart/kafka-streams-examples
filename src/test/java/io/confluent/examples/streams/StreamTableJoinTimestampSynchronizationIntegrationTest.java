@@ -23,8 +23,10 @@ import org.apache.kafka.test.TestUtils;
 import org.junit.After;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
+import org.junit.Ignore;
 import org.junit.Test;
 
+import java.sql.Time;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
@@ -41,6 +43,7 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
     private static final String userClicksTopic = "user-clicks";
     private static final String userRegionsTopic = "user-regions";
     private static final String outputTopic = "output-topic";
+    private static final String intermediateTopic = "intermediate-topic";
 
     @ClassRule
     public static final EmbeddedSingleNodeKafkaCluster CLUSTER = new EmbeddedSingleNodeKafkaCluster(new Properties() {
@@ -54,11 +57,12 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
     public static void startKafkaCluster() throws InterruptedException {
         CLUSTER.createTopic(userClicksTopic);
         CLUSTER.createTopic(userRegionsTopic);
+        CLUSTER.createTopic(intermediateTopic);
         CLUSTER.createTopic(outputTopic);
     }
 
 
-    public void createStreams(final TimestampExtractor timestampExtractor) {
+    public void simpleJoinTopology(final TimestampExtractor timestampExtractor) {
 
         final Serde<String> stringSerde = Serdes.String();
 
@@ -86,13 +90,15 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
 
     @After
     public void stopStreams() {
-        streams.close();
+        if (streams != null) {
+            streams.close();
+        }
     }
 
     @Test
     public void shouldMatchIfEventArriveInRightOrder() throws ExecutionException, InterruptedException {
         //with the default timestamp extractor which rely on the kafka timestamp (ingestion time)
-        createStreams(new FailOnInvalidTimestamp());
+        simpleJoinTopology(new FailOnInvalidTimestamp());
         streams.start();
 
         final Properties producerConfig = producerConfig();
@@ -140,7 +146,7 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
     @Test(expected = AssertionError.class)
     public void shouldNotMatchIfEventDoesNotArriveInRightOrder() throws ExecutionException, InterruptedException {
         //with the default timestamp extractor which rely on the kafka timestamp (ingestion time)
-        createStreams(new FailOnInvalidTimestamp());
+        simpleJoinTopology(new FailOnInvalidTimestamp());
         streams.start();
 
         final Properties producerConfig = producerConfig();
@@ -173,7 +179,7 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
     @Test
     public void shouldMatchIfEventArriveDoesNotInRightOrderWithTimestampExtractor() throws ExecutionException, InterruptedException {
         //with a custom timestamp extractor that will use for the demo the value before the pipe character as a timestamp !
-        createStreams(new MyTimestampExtractor());
+        simpleJoinTopology(new MyTimestampExtractor());
         streams.start();
 
         final Properties producerConfig = producerConfig();
@@ -210,7 +216,7 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
     @Test
     public void multiEvent() throws ExecutionException, InterruptedException {
         //with a custom timestamp extractor that will use for the demo the value before the pipe character as a timestamp !
-        createStreams(new MyTimestampExtractor());
+        simpleJoinTopology(new MyTimestampExtractor());
         streams.start();
 
         final Properties producerConfig = producerConfig();
@@ -262,7 +268,7 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
     @Test(expected = AssertionError.class)
     public void shouldNotMatchIfEventIsATombstone() throws ExecutionException, InterruptedException {
         //with the default timestamp extractor which rely on the kafka timestamp (ingestion time)
-        createStreams(new FailOnInvalidTimestamp());
+        simpleJoinTopology(new FailOnInvalidTimestamp());
         streams.start();
 
         final Properties producerConfig = producerConfig();
@@ -302,7 +308,7 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
     @Test
     public void shouldMatchIfTombstoneIsAfterKStreamEvent() throws ExecutionException, InterruptedException {
         //with the default timestamp extractor which rely on the kafka timestamp (ingestion time)
-        createStreams(new FailOnInvalidTimestamp());
+        simpleJoinTopology(new FailOnInvalidTimestamp());
         streams.start();
 
         final Properties producerConfig = producerConfig();
@@ -349,6 +355,251 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
                 new KeyValue<>("alice","200|click 1 --- 100|asia")
         ));
     }
+
+    /*
+     EDGE CASE
+     In all cases result should be
+     Results should be "200|click 1 --- 100|asia"
+     */
+    @Test
+    public void worksAsExpected() throws ExecutionException, InterruptedException {
+        simpleJoinTopology(new FailOnInvalidTimestamp());
+        streams.start();
+
+
+        aliceChangesRegionsAfterClickingOnWebsite(producerConfig());
+
+        final List<KeyValue<String, String>> actualClicksPerRegion =
+                IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(
+                        consumerConfig(),
+                        outputTopic,
+                        1
+                );
+        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(
+                new KeyValue<>("alice","200|click 1 --- 100|asia")
+        ));
+    }
+
+    @Test
+    @Ignore("Result should be 200|click 1 --- 100|asia")
+    public void returnsWrongKTableEventWithRepartitionTopic() throws ExecutionException, InterruptedException {
+        kStreamWithImplicitReKeyJoinTopology(new FailOnInvalidTimestamp());
+        streams.start();
+
+
+        aliceChangesRegionsAfterClickingOnWebsite(producerConfig());
+
+        final List<KeyValue<String, String>> actualClicksPerRegion =
+                IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(
+                        consumerConfig(),
+                        outputTopic,
+                        1
+                );
+        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(
+                new KeyValue<>("alice","200|click 1 --- 100|asia")
+        ));
+    }
+
+    @Test
+    @Ignore("Result should be 200|click 1 --- 100|asia")
+    public void returnsWrongKTableEventWithIntermediateTopic() throws ExecutionException, InterruptedException {
+        kStreamWithIntermediateTopicReKeyJoinTopology(new FailOnInvalidTimestamp());
+        streams.start();
+
+
+        aliceChangesRegionsAfterClickingOnWebsite(producerConfig());
+
+        final List<KeyValue<String, String>> actualClicksPerRegion =
+                IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(
+                        consumerConfig(),
+                        outputTopic,
+                        1
+                );
+        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(
+                new KeyValue<>("alice","200|click 1 --- 100|asia")
+        ));
+    }
+
+    @Test
+    @Ignore("Result should be 200|click 1 --- 100|asia")
+    public void returnsWrongKTableEventWithIntermediateTopicAndTimestampExtractor() throws ExecutionException, InterruptedException {
+        kStreamWithIntermediateTopicReKeyJoinTopology(new MyTimestampExtractor());
+        streams.start();
+
+
+        aliceChangesRegionsAfterClickingOnWebsite(producerConfig());
+
+        final List<KeyValue<String, String>> actualClicksPerRegion =
+                IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(
+                        consumerConfig(),
+                        outputTopic,
+                        1
+                );
+        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(
+                new KeyValue<>("alice","200|click 1 --- 100|asia")
+        ));
+    }
+
+    @Test
+    @Ignore("Result should be 200|click 1 --- 100|asia")
+    public void returnsWrongKTableEventWithExplicitSubTopologyAndTimestampExtractor() throws ExecutionException, InterruptedException {
+        kStreamWithExplicitReKeyJoinWithExplicitSubTopology(new MyTimestampExtractor());
+        streams.start();
+
+
+        aliceChangesRegionsAfterClickingOnWebsite(producerConfig());
+
+        final List<KeyValue<String, String>> actualClicksPerRegion =
+                IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(
+                        consumerConfig(),
+                        outputTopic,
+                        1
+                );
+        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(
+                new KeyValue<>("alice","200|click 1 --- 100|asia")
+        ));
+    }
+
+    @Test
+    public void worksAsExpectedWithTwoSeparatedApp() throws ExecutionException, InterruptedException {
+        final TimestampExtractor timestampExtractor = new MyTimestampExtractor();
+        KafkaStreams reKeyedStreams = reKeyStreamTopology(timestampExtractor);
+        reKeyedStreams.start();
+
+        KafkaStreams joinedStreams = joinKTableSubTopology(timestampExtractor);
+        joinedStreams.start();
+
+        aliceChangesRegionsAfterClickingOnWebsite(producerConfig());
+
+        final List<KeyValue<String, String>> actualClicksPerRegion =
+                IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(
+                        consumerConfig(),
+                        outputTopic,
+                        1
+                );
+        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(
+                new KeyValue<>("alice","200|click 1 --- 100|asia")
+        ));
+        reKeyedStreams.close();
+        joinedStreams.close();
+    }
+
+    private void aliceChangesRegionsAfterClickingOnWebsite(Properties producerConfig) throws ExecutionException, InterruptedException {
+        // publish an events in KTABLE
+        IntegrationTestUtils.produceKeyValuesSynchronously(
+                userRegionsTopic,
+                Arrays.asList(
+                        // at T0 alice leaves in asia
+                        new KeyValue<>("alice", "100|asia")
+                ),
+                producerConfig
+        );
+        // publish multiple events in KSTREAM
+        IntegrationTestUtils.produceKeyValuesSynchronously(
+                userClicksTopic,
+                Arrays.asList(
+                        // at T1 alice clicks
+                        new KeyValue<>("alice", "200|click 1")
+                ),
+                producerConfig
+        );
+        // publish multiple events in KTABLE at T2
+        IntegrationTestUtils.produceKeyValuesSynchronously(
+                userRegionsTopic,
+                Arrays.asList(
+                        // at T2
+                        new KeyValue<>("alice", "300|europe")
+                ),
+                producerConfig
+        );
+    }
+
+    public void kStreamWithImplicitReKeyJoinTopology(final TimestampExtractor timestampExtractor) {
+
+        final Serde<String> stringSerde = Serdes.String();
+
+        final Properties streamsConfiguration = buildStreamsConfig();
+
+        final StreamsBuilder builder = new StreamsBuilder();
+
+        final KStream<String, String> userClicksStream = builder.stream(userClicksTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+        final KTable<String, String> userRegionsTable = builder.table(userRegionsTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+
+        userClicksStream
+                .selectKey((key, value) -> key)
+                .join(userRegionsTable, this::join)
+                .to(outputTopic, Produced.with(stringSerde, stringSerde));
+        streams = new KafkaStreams(builder.build(), streamsConfiguration);
+    }
+
+    public void kStreamWithIntermediateTopicReKeyJoinTopology(final TimestampExtractor timestampExtractor) {
+
+        final Serde<String> stringSerde = Serdes.String();
+
+        final Properties streamsConfiguration = buildStreamsConfig();
+
+        final StreamsBuilder builder = new StreamsBuilder();
+
+        final KStream<String, String> userClicksStream = builder.stream(userClicksTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+        final KTable<String, String> userRegionsTable = builder.table(userRegionsTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+
+        userClicksStream
+                .selectKey((key, value) -> key)
+                .through(intermediateTopic,Produced.with(stringSerde, stringSerde))
+                .join(userRegionsTable, this::join)
+                .to(outputTopic, Produced.with(stringSerde, stringSerde));
+        streams = new KafkaStreams(builder.build(), streamsConfiguration);
+    }
+
+    public void kStreamWithExplicitReKeyJoinWithExplicitSubTopology(final TimestampExtractor timestampExtractor) {
+
+        final Serde<String> stringSerde = Serdes.String();
+
+        final Properties streamsConfiguration = buildStreamsConfig();
+
+        final StreamsBuilder builder = new StreamsBuilder();
+
+        final KStream<String, String> userClicksStream = builder.stream(userClicksTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+        final KTable<String, String> userRegionsTable = builder.table(userRegionsTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+
+        userClicksStream
+                .selectKey((key, value) -> key)
+                .to(intermediateTopic, Produced.with(stringSerde, stringSerde));
+
+        builder.stream(intermediateTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor))
+                .join(userRegionsTable, this::join)
+                .to(outputTopic, Produced.with(stringSerde, stringSerde));
+        streams = new KafkaStreams(builder.build(), streamsConfiguration);
+    }
+
+    private KafkaStreams reKeyStreamTopology(TimestampExtractor timestampExtractor) {
+        final Serde<String> stringSerde = Serdes.String();
+        final StreamsBuilder builder = new StreamsBuilder();
+        final Properties streamsConfiguration = buildStreamsConfig();
+        streamsConfiguration.put(StreamsConfig.APPLICATION_ID_CONFIG,"sub-topology-1");
+        final KStream<String, String> userClicksStream = builder.stream(userClicksTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+
+        userClicksStream
+                .selectKey((key, value) -> key)
+                .to(intermediateTopic, Produced.with(stringSerde, stringSerde));
+
+        return new KafkaStreams(builder.build(), streamsConfiguration);
+    }
+
+    private KafkaStreams joinKTableSubTopology(TimestampExtractor timestampExtractor) {
+        final Serde<String> stringSerde = Serdes.String();
+        final StreamsBuilder builder = new StreamsBuilder();
+        final Properties streamsConfiguration = buildStreamsConfig();
+        streamsConfiguration.put(StreamsConfig.APPLICATION_ID_CONFIG,"sub-topology-2");
+        final KStream<String, String> rekeyedStream = builder.stream(intermediateTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+        final KTable<String, String> userRegionsTable = builder.table(userRegionsTopic, Consumed.with(stringSerde, stringSerde).withTimestampExtractor(timestampExtractor));
+
+        rekeyedStream
+                .join(userRegionsTable, this::join)
+                .to(outputTopic, Produced.with(stringSerde, stringSerde));
+        return new KafkaStreams(builder.build(), streamsConfiguration);
+    }
+
 
     private Properties buildStreamsConfig() {
         Properties streamsConfiguration = new Properties();
