@@ -265,6 +265,46 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
 
     }
 
+    @Test
+    @Ignore("Result should be 200|click 1 --- 100|asia")
+    public void sameTimestampWhenKTableEventIsReceivedAfterKStreamEvent() throws ExecutionException, InterruptedException {
+        //with a custom timestamp extractor that will use for the demo the value before the pipe character as a timestamp !
+        simpleJoinTopology(new MyTimestampExtractor());
+        streams.start();
+
+        final Properties producerConfig = producerConfig();
+        final Properties consumerConfig = consumerConfig();
+
+        //publish an event in KTABLE
+        IntegrationTestUtils.produceKeyValuesSynchronously(
+                userRegionsTopic,
+                // at T1 (ingest time) alice leaves in asia but contains a business timestamp of 100
+                Arrays.asList(new KeyValue<>("alice", "100|asia")),
+                producerConfig
+        );
+
+        // publish an event in  KSTREAM
+        IntegrationTestUtils.produceKeyValuesSynchronously(
+                userClicksTopic,
+                // at T0 (ingest time) alice clicks but contains a business timestamp of 200
+                Arrays.asList(new KeyValue<>("alice", "100|click 1")),
+                producerConfig);
+
+
+
+        final List<KeyValue<String, String>> actualClicksPerRegion =
+                IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(
+                        consumerConfig,
+                        outputTopic,
+                        1
+                );
+        //we should have one result as we defined a custom timestamp extractor
+        //as such kafka streams will use that as a referential for the ktable to do timestamp synchronization
+
+        //Edge case where both KStream and KTable have same timestamp, but do arrive in first KTable then KStreams side, today join doesn't match
+        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(new KeyValue<>("alice","200|click 1 --- 100|asia")));
+    }
+
     @Test(expected = AssertionError.class)
     public void shouldNotMatchIfEventIsATombstone() throws ExecutionException, InterruptedException {
         //with the default timestamp extractor which rely on the kafka timestamp (ingestion time)
