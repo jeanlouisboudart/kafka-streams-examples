@@ -286,7 +286,7 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
         // publish an event in  KSTREAM
         IntegrationTestUtils.produceKeyValuesSynchronously(
                 userClicksTopic,
-                // at T0 (ingest time) alice clicks but contains a business timestamp of 200
+                // at T0 (ingest time) alice clicks but contains a business timestamp of 100
                 Arrays.asList(new KeyValue<>("alice", "100|click 1")),
                 producerConfig);
 
@@ -302,7 +302,7 @@ public class StreamTableJoinTimestampSynchronizationIntegrationTest {
         //as such kafka streams will use that as a referential for the ktable to do timestamp synchronization
 
         //Edge case where both KStream and KTable have same timestamp, but do arrive in first KTable then KStreams side, today join doesn't match
-        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(new KeyValue<>("alice","200|click 1 --- 100|asia")));
+        assertThat(actualClicksPerRegion).isEqualTo(Arrays.asList(new KeyValue<>("alice","100|click 1 --- 100|asia")));
     }
 
     @Test(expected = AssertionError.class)
